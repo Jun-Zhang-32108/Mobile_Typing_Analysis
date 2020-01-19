@@ -1,0 +1,492 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_document:
+    number_sections: yes
+---
+
+
+
+```{r setup, include=FALSE}
+# This chunk just sets echo = TRUE as default (i.e. print all code)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction 
+A common feature of data .....
+
+
+
+
+We use the following libraries to model the problem. lmerTest is to fit Linear Mixed-Effects Models via REML or maximum likelihood and brms is used for the generalized hierarchical modeling and generalised additive models using Stan.
+```{r, echo=TRUE,warning=FALSE,message=FALSE}
+library(rstan)
+library(lmerTest)
+library(brms)
+library("bayesplot")
+library("ggplot2")
+library(loo)
+```
+
+
+# Data example
+We analyze a simplified typing dataset (Palin et al. 2019) which is the observations from a study with 37,000 volunteers on how people type in mobile devices. Data were collected by a web-based transcription task. The task was to transcribe 15 English sentences and answer a questionnaire after. The participants of the task came from a public website (www.typingtest.com) for training and testing of typing skills. According to the authors of origianl paper, they collected typying test data from over 260,000 participants. Of these data, they filtered the participants who did not finish typing 15 sentences and the questionaires. Also, they further remove about 25% of participants who did not use a mobile device, which yielded a dataset of 37,370 participants typing 15 sentences each. In our case, we got a simplified dataset that contains 39149 participants. We filtered the dataset according to the suggested criterias on the paper. This gives us a dataset containing 36839 participants with columsn PARTICIPANT_ID, KEYBOARD_TYPE, AGE, GENDER, WPM, ERROR_RATE, USING_APP, USING_FEATURES and FINGERS. Notice that the column X below is the indices inherited from the original dataset, which clearly should be discarded. The simplified dataset only contains the records with mobile as the KEYBOARD_TYPE. Hence, this columns also should be omitted. We give a summary of the dataset below.
+
+
+```{r}
+# Read data and show summary
+mobile_participants <- read.csv("mobile_participants.csv")
+summary(mobile_participants)
+```
+Columsn AGE, GENDER, USING_FEATURES, FINGERS show the background information and typing habits of the participants. The median and mean values of the participants ages are 23 and 24,71 respectively. It shows that most participants are young people. We notice that there are also some abnoraml values in the column. For example, the participants ages can not be 3015 or 0. We will filter the abnormal values later. In terms of gender ratio, the number of female participants are twice of male participants. USING_FEATURES shows what kind of input features people used. There are mainly three kinds of features here, autocorrection, predition and swipe. Notice that the features in this column cannot reflect the 100% truth of what feature each participanted used. Authors of the original paper developed a algorithm to recognize the text entry method due to the limitation of the web-based logging in the mobile devices. WPM and ERROR_RATE are two indicators of participants' input performances, which are also the response varibales in this project. WPM represents Word per minute. It is computed as the the length of input (one word defined as five characters) divided by the time between the first and the last keystroke. ERROW_RATE is calculated as the Levinshtein edit distance between the presented and transcribed string, divided by the larger size of the strings.
+
+In this project, we only need AGE, GENDER, WPM, ERROR_RATE, USING_FEATURES columns to construct our model and we aim to predict WPM and ERROR_RATE:
+```{r}
+New_data=mobile_participants[ ,c("AGE","GENDER","USING_FEATURES","WPM","ERROR_RATE")
+                              , drop=FALSE]
+```
+
+As mentioned before, some prelimanary steps are required to clean the data set. These criteria are sellected from (Palin et al. 2019). For example, they suggested to exclude some participants which their WPM is more than 200, whose their age is less than 5 or more 61 years old (more than 2 SD away from mean age).  
+
+```{r}
+Final=subset(New_data, AGE > 5 & AGE < 61 & WPM<200 & WPM>0 & GENDER!="none", ERROR_RATE>0)
+
+# Filtering USING_FEATURES according to 4 levels (Palin et al. 2019)
+levels(Final$USING_FEATURES)[levels(Final$USING_FEATURES)=="[\"no\"]"] <- "No ITE"
+levels(Final$USING_FEATURES)[levels(Final$USING_FEATURES)=="[]"] <- "No ITE"
+levels(Final$USING_FEATURES)[levels(Final$USING_FEATURES)
+                                            =="[\"prediction\"]"] <- "prediction"
+levels(Final$USING_FEATURES)[levels(Final$USING_FEATURES)
+                                            =="[\"autocorrection\"]"] <- "autocorrection"
+levels(Final$USING_FEATURES)[levels(Final$USING_FEATURES)!="No ITE" 
+                        & levels(Final$USING_FEATURES)!= "prediction"
+                        & levels(Final$USING_FEATURES)!= "autocorrection"] <- "Mixed ITE"
+str(Final)
+```
+
+We draw the historgram of WPM as below.
+```{r, fig.width=4, fig.height=4}
+hist(Final$WPM, nclass=500,xlim=c(0,100),col="red",xlab = "WPM",main="Histogram of WPM")
+```
+
+# Model fitting
+
+##  WPM prediction
+It shows the plot for out data
+```{r,, fig.width=6, fig.height=4}
+theme_set(bayesplot::theme_default())
+p=ggplot(Final,
+         aes(
+           x=AGE,
+           y=WPM
+         ))
+p1=p+
+  geom_point(size=.25, color = "red")+
+  geom_smooth(method="lm",se=FALSE, color="#7c0000")
+p1
+```
+### Linear regression model
+write the model here ...
+### Code
+write code description ...
+```{r,warning=FALSE,message=FALSE,results="hide"}
+
+smodel_wpm_l="data {
+ int < lower = 1 > N; // Sample size
+ vector[N] x; // Predictor
+ vector[N] y; // Outcome
+}
+
+parameters {
+ real alpha; // Intercept
+ real beta; // Slope (regression coefficients)
+ real < lower = 0 > sigma; // Error SD
+}
+
+model {
+ y ~ normal(x * beta + alpha, sigma);
+  alpha ~ normal(50, 20);
+  beta ~ normal(1, 0.1);
+}
+
+generated quantities {
+ real y_rep_wpm[N];
+ vector[N] log_lik;
+ for (n in 1:N) {
+ y_rep_wpm[n] = normal_rng(x[n] * beta + alpha, sigma);
+   log_lik[n] = normal_lpdf(y[n] | x[n] * beta + alpha, sigma);
+ }
+ }
+"
+stan_wpm_l <- stan_model(model_code = smodel_wpm_l)
+
+data_wpm_l <- list (x = Final$AGE,y=Final$WPM,N = length(Final$WPM))
+fit_wpm_l <- sampling(stan_wpm_l, data=data_wpm_l,chains=1,iter=500, warmup=100)
+```
+
+#### Prior distributions
+write some text ...
+#### R_hat
+```{r}
+print(fit_wpm_l, pars=c("alpha", "beta","sigma"), probs=c(.1,.5,.9))
+```
+#### hmc convergence tree-depth divergences
+
+
+```{r}
+divergent_wpm_l <- get_sampler_params(fit_wpm_l, inc_warmup=FALSE)[[1]][,'divergent__']
+print(sum(divergent_wpm_l)/700)
+```
+
+
+
+```{r, fig.width=8, fig.height=4}
+traceplot(fit_wpm_l, pars =c("alpha", "beta","sigma"))
+```
+#### n_eff or ESS
+```{r}
+print(fit_wpm_l, pars=c("alpha", "beta","sigma"), probs=c(.1,.5,.9))
+```
+
+
+
+### Posterior densities & histograms
+We can also look at the posterior densities & histograms
+```{r, warning=FALSE,message=FALSE, fig.width=8, fig.height=4}
+stan_hist(fit_wpm_l,pars=c("alpha", "beta","sigma"))
+```
+
+```{r, warning=FALSE,message=FALSE, fig.width=8, fig.height=4}
+stan_dens(fit_wpm_l,pars=c("alpha", "beta","sigma"))
+```
+
+#### postrior check
+
+```{r, fig.width=6, fig.height=4}
+y_rep_wpm <- as.matrix(fit_wpm_l, pars = "y_rep_wpm")
+ppc_dens_overlay(Final$WPM, y_rep_wpm[1:50, ])
+```
+
+```{r, fig.width=6, fig.height=4}
+posterior <- extract(fit_wpm_l)
+plot(Final$WPM ~ Final$AGE, pch = 20,cex = .5,xlab="AGE",ylab="WPM",main="")
+abline( mean(posterior$alpha), mean(posterior$beta), col = 6, lw = 2)
+```
+
+```{r, warning=FALSE,message=FALSE, fig.width=6, fig.height=4}
+ppc_stat(y = Final$WPM, yrep = y_rep_wpm, stat = "mean")
+```
+
+
+
+### Hierarchical generalized linear model
+### Code
+```{r,eval=FALSE,eval=FALSE}
+fit_wpm_h <- brm(WPM ~ 1+AGE+GENDER+(1+GENDER|USING_FEATURES), data = Final,chains = 1,iter=500, warmup=100)
+fit_wpm_h <- add_criterion(fit_wpm_h, "waic")
+```
+#### Prior distributions
+discuss this part
+#### R_hat
+```{r,eval=FALSE,eval=FALSE}
+print(fit_wpm_h, pars=c("alpha", "beta","sigma"), probs=c(.1,.5,.9))
+```
+
+#### hmc convergence tree-depth divergences
+```{r,eval=FALSE}
+divergent_wpm_h <- get_sampler_params(fit_wpm_h, inc_warmup=FALSE)[[1]][,'divergent__']
+print(sum(divergent_wpm_h)/400)
+```
+
+```{r,eval=FALSE}
+traceplot(fit_wpm_h, pars =c("alpha", "beta","sigma"))
+```
+
+#### n_eff or ESS
+```{r,eval=FALSE}
+print(fit_wpm_h, pars=c("alpha", "beta","sigma"), probs=c(.1,.5,.9))
+```
+
+
+### Posterior densities & histograms
+We can also look at the posterior densities & histograms
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+stan_hist(fit_wpm_h,pars=c("alpha", "beta","sigma"))
+
+```
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+stan_dens(fit_wpm_h,pars=c("alpha", "beta","sigma"))
+```
+
+#### postrior check
+
+```{r, fig.width=4, fig.height=4,eval=FALSE}
+marginal_effects(fit_wpm_h,effects = "AGE")
+```
+
+```{r, fig.width=4, fig.height=4,eval=FALSE}
+marginal_effects(fit_wpm_h,effects = "GENDER")
+```
+
+
+```{r,eval=FALSE}
+yrep_wpm_h <- posterior_predict(fit_wpm_h, draws = 500)
+color_scheme_set("brightblue")
+ppc_dens_overlay(Final$WPM, yrep_wpm_h[1:50, ])
+```
+
+
+
+```{r,eval=FALSE}
+y_rep_wpm <- as.matrix(fit_wpm_l, pars = "y_rep_wpm")
+ppc_dens_overlay(Final$WPM, y_rep_wpm[1:50, ])
+```
+
+```{r,eval=FALSE}
+posterior <- extract(fit_wpm_l)
+plot(Final$WPM ~ Final$AGE, pch = 20)
+abline( mean(posterior$alpha), mean(posterior$beta), col = 6, lw = 2)
+```
+
+```{r,eval=FALSE}
+ppc_stat(y = Final$WPM, yrep = y_rep_wpm, stat = "mean")
+```
+
+
+
+
+
+## comparison and conclusion
+
+```{r}
+loo_wpm_l1 <- loo(fit_wpm_l, save_psis = TRUE)
+print(loo_wpm_l1)
+```
+
+
+```{r}
+log_lik_1 <- extract_log_lik(fit_wpm_l, merge_chains = FALSE)
+r_eff <- relative_eff(exp(log_lik_1)) 
+loo_wpm_l2 <- loo(log_lik_1, r_eff = r_eff, cores = 2)
+print(loo_wpm_l2)
+```
+
+
+## Discussion
+Discuss the results ...
+
+
+
+
+## Error rate prediction
+### Linear regression model
+Write some texts ...
+### Code
+write code description ...
+```{r,warning=FALSE,message=FALSE,results="hide"}
+
+smodel_error_l="data {
+ int < lower = 1 > N; // Sample size
+ vector[N] x; // Predictor
+ vector[N] y; // Outcome
+}
+
+parameters {
+ real alpha; // Intercept
+ real beta; // Slope (regression coefficients)
+ real < lower = 0 > sigma; // Error SD
+}
+
+model {
+ y ~ normal(x * beta + alpha, sigma);
+  alpha ~ normal(50, 20);
+  beta ~ normal(1, 0.1);
+}
+
+generated quantities {
+ real y_rep_error[N];
+ vector[N] log_lik;
+ for (n in 1:N) {
+ y_rep_error[n] = normal_rng(x[n] * beta + alpha, sigma);
+   log_lik[n] = normal_lpdf(y[n] | x[n] * beta + alpha, sigma);
+ }
+ }
+"
+stan_error_l <- stan_model(model_code = smodel_error_l)
+
+data_error_l <- list (x = Final$AGE,y=Final$ERROR_RATE,N = length(Final$WPM))
+fit_error_l <- sampling(stan_error_l, data=data_error_l,chains=1,iter=500, warmup=100)
+```
+
+
+
+
+
+
+
+
+
+#### Prior distributions
+write some text ...
+
+
+
+#### R_hat
+```{r}
+print(fit_error_l, pars=c("alpha", "beta","sigma"), probs=c(.1,.5,.9))
+```
+#### hmc convergence tree-depth divergences
+
+
+```{r}
+divergent_error_l <- get_sampler_params(fit_error_l, inc_warmup=FALSE)[[1]][,'divergent__']
+print(sum(divergent_error_l)/400)
+```
+
+
+
+```{r, fig.width=8, fig.height=4}
+traceplot(fit_error_l, pars =c("alpha", "beta","sigma"))
+```
+
+#### n_eff or ESS
+
+```{r}
+print(fit_error_l, pars=c("alpha", "beta","sigma"), probs=c(.1,.5,.9))
+```
+
+
+
+### Posterior densities & histograms
+We can also look at the posterior densities & histograms
+```{r, warning=FALSE,message=FALSE, fig.width=8, fig.height=4}
+stan_hist(fit_error_l,pars=c("alpha", "beta","sigma"))
+```
+
+```{r, warning=FALSE,message=FALSE, fig.width=8, fig.height=4}
+stan_dens(fit_error_l,pars=c("alpha", "beta","sigma"))
+```
+
+#### postrior check
+
+```{r, fig.width=6, fig.height=4}
+y_rep_error <- as.matrix(fit_error_l, pars = "y_rep_error")
+ppc_dens_overlay(Final$ERROR_RATE, y_rep_error[1:50, ])
+```
+
+```{r, fig.width=6, fig.height=4}
+posterior <- extract(fit_error_l)
+plot(Final$ERROR_RATE ~ Final$AGE, pch = 20,cex = .5,xlab="AGE",ylab="ERROR_RATE",main="")
+abline( mean(posterior$alpha), mean(posterior$beta), col = 6, lw = 2)
+```
+
+```{r, warning=FALSE,message=FALSE, fig.width=6, fig.height=4}
+ppc_stat(y = Final$ERROR_RATE, yrep = y_rep_error, stat = "mean")
+```
+
+
+
+
+### Hierarchical generalized linear model
+### Code
+
+```{r,eval=FALSE}
+fit_error_h <- brm(ERROR_RATE ~AGE+GENDER+(1|USING_FEATURES), data = Final, family = hurdle_gamma(), chains = 1,warmup = 100,iter = 500, cores = 4)
+fit_error_h <- add_criterion(fit_error_h, "waic")
+```
+```{r,eval=FALSE}
+summary(fit_error_h)
+```
+
+#### Prior distributions
+Discuss it ...
+#### R_hat
+
+
+#### R_hat
+```{r,eval=FALSE}
+print(fit_error_h, pars=c("alpha", "beta","sigma"), probs=c(.1,.5,.9))
+```
+
+#### hmc convergence tree-depth divergences
+```{r,eval=FALSE}
+divergent_error_h <- get_sampler_params(fit_error_h, inc_warmup=FALSE)[[1]][,'divergent__']
+print(sum(divergent_error_h)/400)
+```
+
+
+```{r,eval=FALSE}
+traceplot(fit_error_h, pars =c("alpha", "beta","sigma"))
+```
+
+#### n_eff or ESS
+```{r,eval=FALSE}
+print(fit_error_h, pars=c("alpha", "beta","sigma"), probs=c(.1,.5,.9))
+```
+
+
+#### postrior check
+We can also look at the posterior densities & histograms
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+stan_hist(fit_error_h,pars=c("alpha", "beta","sigma"))
+
+```
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+stan_dens(fit_error_h,pars=c("alpha", "beta","sigma"))
+```
+
+```{r, fig.width=4, fig.height=4,eval=FALSE}
+marginal_effects(fit_error_h,effects = "AGE")
+```
+
+```{r, fig.width=4, fig.height=4,eval=FALSE}
+marginal_effects(fit_error_h,effects = "GENDER")
+```
+
+
+```{r,eval=FALSE}
+yrep_error_h <- posterior_predict(fit_error_h, draws = 500)
+color_scheme_set("brightblue")
+ppc_dens_overlay(Final$ERROR_RATE, yrep_error_h[1:50, ])
+```
+
+
+```{r,eval=FALSE}
+y_rep_error <- as.matrix(fit_wpm_l, pars = "y_rep_error")
+ppc_dens_overlay(Final$ERROR_RATE, y_rep_error[1:50, ])
+```
+
+```{r,eval=FALSE}
+posterior_error <- extract(fit_error_l)
+plot(Final$ERROR_RATE ~ Final$AGE, pch = 20)
+abline( mean(posterior_error$alpha), mean(posterior_error$beta), col = 6, lw = 2)
+```
+
+```{r,eval=FALSE}
+ppc_stat(y = Final$ERROR_RATE, yrep = y_rep_error, stat = "mean")
+```
+
+
+
+## comparison and conclusion
+
+```{r,eval=FALSE}
+loo_error_l1 <- loo(fit_error_l, save_psis = TRUE)
+print(loo_error_l1)
+```
+
+## Discussion
+
+
+
+
+
+
+# References {-}
+
+Palin, K., Feit, A.M., Kim, S., Kristensson, P.O. and Oulasvirta, A., 2019, October. How do People Type on Mobile Devices?: Observations from a Study with 37,000 Volunteers. In Proceedings of the 21st International Conference on Human-Computer Interaction with Mobile Devices and Services (p. 9). ACM.
+
+
+
+
